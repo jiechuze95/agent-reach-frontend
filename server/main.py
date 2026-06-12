@@ -230,7 +230,7 @@ async def get_doctor():
     """Run agent-reach doctor and return channel health status."""
     ar = find_agent_reach()
     # Try --json first
-    result = await run_command([ar, "doctor", "--json"], timeout=30)
+    result = await run_command([ar, "doctor", "--json"], timeout=90)
     if result["success"]:
         try:
             data = json.loads(result["output"])
@@ -239,7 +239,7 @@ async def get_doctor():
             pass
 
     # Fallback: parse text output
-    result = await run_command([ar, "doctor"], timeout=30)
+    result = await run_command([ar, "doctor"], timeout=90)
     channels = []
     if result["success"] or result["output"]:
         for line in result["output"].splitlines():
@@ -379,7 +379,7 @@ async def uninstall(req: UninstallRequest):
 async def manage_skill(req: SkillRequest):
     """Install or uninstall the agent-reach skill."""
     ar = find_agent_reach()
-    cmd = [ar, "skill", req.action]
+    cmd = [ar, "skill", f"--{req.action}"]
 
     _add_history(" ".join(cmd))
     result = await run_command(cmd, timeout=60)
