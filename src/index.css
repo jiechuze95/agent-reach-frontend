@@ -8,6 +8,12 @@
   ::-webkit-scrollbar-track { @apply bg-dark-900; }
   ::-webkit-scrollbar-thumb { @apply bg-dark-600 rounded-full; }
   ::-webkit-scrollbar-thumb:hover { @apply bg-dark-500; }
+
+  /* Firefox scrollbar styles */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #4b5563 #111827;
+  }
 }
 
 @layer components {
@@ -24,6 +30,20 @@
   .badge-info { @apply bg-blue-500/10 text-blue-400 border border-blue-500/20; }
   .input { @apply bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-dark-100 placeholder-dark-400 focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500/20 transition-colors; }
   .select { @apply bg-dark-900 border border-dark-600 rounded-lg px-3 py-2 text-sm text-dark-100 focus:outline-none focus:border-primary-500 transition-colors; }
+}
+
+/* Focus-visible styles */
+.btn-primary:focus-visible,
+.btn-secondary:focus-visible,
+.btn-danger:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+.input:focus-visible,
+.select:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 1px;
 }
 
 /* Terminal styling */

@@ -1,9 +1,16 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import {
   Settings, Save, Loader2, AlertTriangle, Trash2, RefreshCw,
-  CheckCircle, XCircle, Shield, Download, FileText, Wrench
+  CheckCircle, XCircle, Shield, Download, FileText, Wrench, Eye, EyeOff
 } from 'lucide-react'
 import { api } from '../api/client'
+
+const SENSITIVE_KEYS = ['token', 'secret', 'password', 'api_key', 'apikey', 'key', 'credential', 'auth']
+
+function isSensitiveKey(key) {
+  const lower = key.toLowerCase()
+  return SENSITIVE_KEYS.some(s => lower.includes(s))
+}
 
 export default function SettingsPage() {
   const [config, setConfig] = useState(null)
@@ -12,6 +19,9 @@ export default function SettingsPage() {
   const [configValue, setConfigValue] = useState('')
   const [configMsg, setConfigMsg] = useState(null)
   const [saving, setSaving] = useState(false)
+
+  // Visibility toggle for sensitive config values
+  const [visibleKeys, setVisibleKeys] = useState({})
 
   // Skill management
   const [skillAction, setSkillAction] = useState(null)
@@ -27,9 +37,32 @@ export default function SettingsPage() {
   const [uninstallResult, setUninstallResult] = useState(null)
   const [uninstalling, setUninstalling] = useState(false)
 
+  const uninstallResultRef = useRef(null)
+
   useEffect(() => {
     loadConfig()
   }, [])
+
+  // Auto-dismiss config messages after 3 seconds
+  useEffect(() => {
+    if (!configMsg) return
+    const timer = setTimeout(() => setConfigMsg(null), 3000)
+    return () => clearTimeout(timer)
+  }, [configMsg])
+
+  // Auto-dismiss skill messages after 3 seconds
+  useEffect(() => {
+    if (!skillMsg) return
+    const timer = setTimeout(() => setSkillMsg(null), 3000)
+    return () => clearTimeout(timer)
+  }, [skillMsg])
+
+  // Focus on uninstall result after operation
+  useEffect(() => {
+    if (uninstallResult && uninstallResultRef.current) {
+      uninstallResultRef.current.focus()
+    }
+  }, [uninstallResult])
 
   async function loadConfig() {
     setConfigLoading(true)
@@ -107,6 +140,10 @@ export default function SettingsPage() {
     }
   }
 
+  function toggleKeyVisibility(key) {
+    setVisibleKeys(prev => ({ ...prev, [key]: !prev[key] }))
+  }
+
   return (
     <div className="space-y-6 animate-slide-in max-w-3xl">
       {/* Configuration Section */}
@@ -115,7 +152,7 @@ export default function SettingsPage() {
           <span className="font-medium text-sm flex items-center gap-2">
             <Settings size={18} /> 配置管理
           </span>
-          <button onClick={loadConfig} disabled={configLoading} className="text-dark-400 hover:text-dark-200">
+          <button onClick={loadConfig} disabled={configLoading} className="text-dark-400 hover:text-dark-200" aria-label="刷新配置">
             <RefreshCw size={16} className={configLoading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -137,7 +174,22 @@ export default function SettingsPage() {
                     {Object.entries(config.data).map(([k, v]) => (
                       <div key={k} className="flex items-center gap-3 text-sm">
                         <span className="text-primary-400 font-mono text-xs min-w-[120px]">{k}</span>
-                        <span className="text-dark-300 truncate">{String(v)}</span>
+                        {isSensitiveKey(k) ? (
+                          <div className="flex items-center gap-2 flex-1 min-w-0">
+                            <span className="text-dark-300 truncate font-mono">
+                              {visibleKeys[k] ? String(v) : '\u2022'.repeat(Math.min(String(v).length, 20))}
+                            </span>
+                            <button
+                              onClick={() => toggleKeyVisibility(k)}
+                              className="text-dark-500 hover:text-dark-300 shrink-0"
+                              aria-label={visibleKeys[k] ? '隐藏值' : '显示值'}
+                            >
+                              {visibleKeys[k] ? <EyeOff size={14} /> : <Eye size={14} />}
+                            </button>
+                          </div>
+                        ) : (
+                          <span className="text-dark-300 truncate">{String(v)}</span>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -306,7 +358,11 @@ export default function SettingsPage() {
                 </button>
               </div>
               {uninstallResult && (
-                <div className={`text-xs mt-2 ${uninstallResult.success ? 'text-emerald-400' : 'text-red-400'}`}>
+                <div
+                  ref={uninstallResultRef}
+                  tabIndex={-1}
+                  className={`text-xs mt-2 outline-none ${uninstallResult.success ? 'text-emerald-400' : 'text-red-400'}`}
+                >
                   {uninstallResult.success ? '卸载完成' : `卸载失败: ${uninstallResult.error}`}
                   {uninstallResult.output && (
                     <pre className="mt-2 whitespace-pre-wrap bg-dark-900 rounded-lg p-3 text-dark-300">

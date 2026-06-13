@@ -1,30 +1,31 @@
 import { create } from 'zustand'
+import { api } from './api/client'
 
 export const useStore = create((set) => ({
-  // 全局状态
-  status: null,        // agent-reach 安装状态
-  doctorResult: null,   // doctor 检查结果
+  // Global state
+  status: null,
+  doctorResult: null,
   loading: false,
   error: null,
 
   setLoading: (loading) => set({ loading }),
   setError: (error) => set({ error }),
+  clearError: () => set({ error: null }),
 
   fetchStatus: async () => {
+    set({ loading: true, error: null })
     try {
-      const { api } = await import('./api/client')
       const data = await api.getStatus()
-      set({ status: data, error: null })
+      set({ status: data, error: null, loading: false })
       return data
     } catch (e) {
-      set({ error: e.message })
+      set({ error: e.message, loading: false })
     }
   },
 
   fetchDoctor: async () => {
-    set({ loading: true })
+    set({ loading: true, error: null })
     try {
-      const { api } = await import('./api/client')
       const data = await api.runDoctor()
       set({ doctorResult: data, loading: false, error: null })
       return data

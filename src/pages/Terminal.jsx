@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import {
   Play, Square, Trash2, Wifi, WifiOff, Clock,
-  ChevronDown, Copy, Check, Loader2
+  Copy, Check, Loader2
 } from 'lucide-react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
@@ -16,13 +16,14 @@ const QUICK_COMMANDS = [
 export default function TerminalPage() {
   const { output, connected, running, send, interrupt, clear } = useWebSocket()
   const [input, setInput] = useState('')
-  const [history, setHistory] = useState([])
+  const [localHistory, setLocalHistory] = useState([])
   const [historyIndex, setHistoryIndex] = useState(-1)
-  const [cmdHistory, setCmdHistory] = useState([])
+  const [serverHistory, setServerHistory] = useState([])
   const [copied, setCopied] = useState(false)
 
   const terminalRef = useRef(null)
   const inputRef = useRef(null)
+  const copyTimeoutRef = useRef(null)
 
   // Auto-scroll
   useEffect(() => {
@@ -31,15 +32,24 @@ export default function TerminalPage() {
     }
   }, [output])
 
-  // Load command history
+  // Load server command history
   useEffect(() => {
-    loadHistory()
+    loadServerHistory()
   }, [])
 
-  async function loadHistory() {
+  // Clean up copy timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  async function loadServerHistory() {
     try {
       const data = await api.getHistory()
-      setCmdHistory(data.history || [])
+      setServerHistory(data.history || [])
     } catch (e) {
       // ignore
     }
@@ -50,7 +60,7 @@ export default function TerminalPage() {
     const cmd = input.trim()
     if (!cmd || running) return
     send(cmd)
-    setHistory(prev => [cmd, ...prev].slice(0, 100))
+    setLocalHistory(prev => [cmd, ...prev].slice(0, 100))
     setHistoryIndex(-1)
     setInput('')
   }
@@ -58,17 +68,17 @@ export default function TerminalPage() {
   function handleKeyDown(e) {
     if (e.key === 'ArrowUp') {
       e.preventDefault()
-      if (history.length > 0) {
-        const newIdx = Math.min(historyIndex + 1, history.length - 1)
+      if (localHistory.length > 0) {
+        const newIdx = Math.min(historyIndex + 1, localHistory.length - 1)
         setHistoryIndex(newIdx)
-        setInput(history[newIdx])
+        setInput(localHistory[newIdx])
       }
     } else if (e.key === 'ArrowDown') {
       e.preventDefault()
       if (historyIndex > 0) {
         const newIdx = historyIndex - 1
         setHistoryIndex(newIdx)
-        setInput(history[newIdx])
+        setInput(localHistory[newIdx])
       } else {
         setHistoryIndex(-1)
         setInput('')
@@ -80,21 +90,21 @@ export default function TerminalPage() {
   }
 
   function handleQuickCommand(cmd) {
-    if (running) return
+    if (running || !connected) return
     send(cmd)
-    setHistory(prev => [cmd, ...prev].slice(0, 100))
+    setLocalHistory(prev => [cmd, ...prev].slice(0, 100))
   }
 
-  async function handleCopyOutput() {
+  const handleCopyOutput = useCallback(async () => {
     const text = output.map(l => l.text).join('\n')
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
     } catch (e) {
       // ignore
     }
-  }
+  }, [output])
 
   function getLineClass(type) {
     switch (type) {
@@ -127,6 +137,7 @@ export default function TerminalPage() {
               onClick={() => handleQuickCommand(qc.cmd)}
               disabled={running || !connected}
               className="btn-secondary text-xs !px-2.5 !py-1.5"
+              aria-label={`快捷命令: ${qc.label}`}
             >
               {qc.label}
             </button>
@@ -140,6 +151,7 @@ export default function TerminalPage() {
           onClick={handleCopyOutput}
           disabled={output.length === 0}
           className="btn-secondary text-xs !px-2.5 !py-1.5 flex items-center gap-1.5"
+          aria-label="复制终端输出"
         >
           {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
           {copied ? '已复制' : '复制输出'}
@@ -148,6 +160,7 @@ export default function TerminalPage() {
           onClick={clear}
           disabled={output.length === 0}
           className="btn-secondary text-xs !px-2.5 !py-1.5 flex items-center gap-1.5"
+          aria-label="清空终端输出"
         >
           <Trash2 size={12} /> 清空
         </button>
@@ -155,6 +168,7 @@ export default function TerminalPage() {
           <button
             onClick={interrupt}
             className="btn-danger text-xs !px-2.5 !py-1.5 flex items-center gap-1.5"
+            aria-label="中断当前命令"
           >
             <Square size={12} /> 中断
           </button>
@@ -182,7 +196,13 @@ export default function TerminalPage() {
         </div>
 
         {/* Output */}
-        <div ref={terminalRef} className="flex-1 overflow-y-auto p-4 terminal-output">
+        <div
+          ref={terminalRef}
+          className="flex-1 overflow-y-auto p-4 terminal-output"
+          role="log"
+          aria-live="polite"
+          aria-label="终端输出"
+        >
           {output.length === 0 && (
             <div className="text-dark-500 text-sm">
               <div className="mb-2">Agent Reach 终端已就绪。</div>
@@ -191,13 +211,13 @@ export default function TerminalPage() {
             </div>
           )}
           {output.map((line, i) => (
-            <div key={i} className={getLineClass(line.type)}>
+            <div key={`${line.type}-${i}-${line.text.slice(0, 20)}`} className={getLineClass(line.type)}>
               {line.text}
             </div>
           ))}
           {running && (
             <div className="text-dark-500 flex items-center gap-1 mt-1">
-              <span className="animate-pulse-dot">█</span>
+              <span className="animate-pulse-dot">&#x2588;</span>
             </div>
           )}
         </div>
@@ -222,25 +242,27 @@ export default function TerminalPage() {
             type="submit"
             disabled={!connected || running || !input.trim()}
             className="text-primary-400 hover:text-primary-300 disabled:text-dark-600 transition-colors"
+            aria-label="执行命令"
           >
             <Play size={16} />
           </button>
         </form>
       </div>
 
-      {/* Recent History */}
-      {cmdHistory.length > 0 && (
+      {/* Recent Server History */}
+      {serverHistory.length > 0 && (
         <div className="flex items-center gap-2 text-xs text-dark-500">
           <Clock size={12} />
           <span>最近:</span>
           <div className="flex gap-1.5 overflow-x-auto">
-            {cmdHistory.slice(0, 5).map((h, i) => (
+            {serverHistory.slice(0, 5).map((h, i) => (
               <button
                 key={i}
                 onClick={() => handleQuickCommand(h.command)}
                 disabled={running || !connected}
                 className="px-2 py-1 rounded bg-dark-800 hover:bg-dark-700 text-dark-400 hover:text-dark-200 whitespace-nowrap transition-colors truncate max-w-[200px]"
                 title={h.command}
+                aria-label={`运行历史命令: ${h.command}`}
               >
                 {h.command}
               </button>

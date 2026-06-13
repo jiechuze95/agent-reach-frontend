@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react'
 import {
-  ChevronRight, ChevronLeft, Check, Loader2, AlertCircle,
+  ChevronRight, ChevronLeft, Check, Loader2,
   Download, Server, Globe, Shield, Play, RotateCcw
 } from 'lucide-react'
 import { api } from '../api/client'
@@ -35,6 +35,15 @@ const CHANNEL_OPTIONS = [
   { name: 'xiaoyuzhou', label: '小宇宙', icon: '🎙️', tier: 2 },
 ]
 
+function isValidUrl(string) {
+  try {
+    new URL(string)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export default function Install() {
   const [step, setStep] = useState(0)
   const [env, setEnv] = useState('auto')
@@ -44,6 +53,7 @@ export default function Install() {
   const [proxy, setProxy] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installResult, setInstallResult] = useState(null)
+  const [proxyError, setProxyError] = useState('')
 
   const { output, connected, running, send, clear } = useWebSocket()
   const terminalRef = useRef(null)
@@ -53,6 +63,29 @@ export default function Install() {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight
     }
   }, [output])
+
+  // Track install completion via WebSocket done/error messages
+  useEffect(() => {
+    if (!installing) return
+    if (!connected) return
+
+    // Check if the last output line indicates completion
+    const lastLine = output[output.length - 1]
+    if (lastLine && (lastLine.type === 'success' || lastLine.type === 'error')) {
+      setInstalling(false)
+      setInstallResult({
+        success: lastLine.type === 'success',
+        message: lastLine.text,
+      })
+    }
+  }, [output, installing, connected])
+
+  // Also stop installing when running becomes false (WebSocket command finished)
+  useEffect(() => {
+    if (installing && connected && !running && output.length > 0) {
+      setInstalling(false)
+    }
+  }, [running, installing, connected, output.length])
 
   function toggleChannel(name) {
     setSelectedChannels(prev =>
@@ -69,6 +102,13 @@ export default function Install() {
   }
 
   async function executeInstall() {
+    // Validate proxy URL if provided
+    if (proxy && !isValidUrl(proxy)) {
+      setProxyError('代理地址格式无效，请输入完整的 URL（如 http://127.0.0.1:7890）')
+      return
+    }
+    setProxyError('')
+
     setInstalling(true)
     setInstallResult(null)
     clear()
@@ -81,6 +121,7 @@ export default function Install() {
     if (selectedChannels.length > 0) cmd += ` --channels=${selectedChannels.join(',')}`
 
     if (connected) {
+      // Don't setInstalling(false) immediately - tracked via WebSocket done/error
       send(cmd)
     } else {
       // Fallback to REST API
@@ -96,16 +137,19 @@ export default function Install() {
       } catch (e) {
         setInstallResult({ success: false, error: e.message })
       }
+      setInstalling(false)
     }
-    setInstalling(false)
   }
 
   function canNext() {
     if (step === 0) return true
-    if (step === 1) return true // channels are optional
+    if (step === 1) return true
     if (step === 2) return true
     return true
   }
+
+  // Disable step navigation while installing/running
+  const isNavigationDisabled = installing || running
 
   return (
     <div className="space-y-6 animate-slide-in">
@@ -114,14 +158,15 @@ export default function Install() {
         {STEPS.map((s, i) => (
           <React.Fragment key={s.id}>
             <button
-              onClick={() => i < step && setStep(i)}
+              onClick={() => !isNavigationDisabled && i < step && setStep(i)}
+              disabled={isNavigationDisabled || i >= step}
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm transition-colors ${
                 i === step
                   ? 'bg-primary-600/20 text-primary-400 font-medium'
                   : i < step
                   ? 'text-emerald-400 hover:bg-dark-800 cursor-pointer'
                   : 'text-dark-500 cursor-default'
-              }`}
+              } ${isNavigationDisabled ? 'opacity-50 pointer-events-none' : ''}`}
             >
               <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs ${
                 i === step
@@ -254,10 +299,13 @@ export default function Install() {
                 <input
                   type="text"
                   value={proxy}
-                  onChange={e => setProxy(e.target.value)}
+                  onChange={e => { setProxy(e.target.value); setProxyError('') }}
                   placeholder="如: http://127.0.0.1:7890"
-                  className="input w-full max-w-md"
+                  className={`input w-full max-w-md ${proxyError ? 'border-red-500' : ''}`}
                 />
+                {proxyError && (
+                  <p className="text-xs text-red-400 mt-1">{proxyError}</p>
+                )}
               </div>
             </div>
           )}
@@ -351,7 +399,7 @@ export default function Install() {
       <div className="flex justify-between">
         <button
           onClick={() => setStep(Math.max(0, step - 1))}
-          disabled={step === 0}
+          disabled={step === 0 || isNavigationDisabled}
           className="btn-secondary flex items-center gap-2"
         >
           <ChevronLeft size={16} /> 上一步
@@ -359,7 +407,7 @@ export default function Install() {
         {step < STEPS.length - 1 ? (
           <button
             onClick={() => setStep(step + 1)}
-            disabled={!canNext()}
+            disabled={!canNext() || isNavigationDisabled}
             className="btn-primary flex items-center gap-2"
           >
             下一步 <ChevronRight size={16} />
@@ -367,6 +415,7 @@ export default function Install() {
         ) : (
           <button
             onClick={() => { setStep(0); setInstallResult(null); clear() }}
+            disabled={isNavigationDisabled}
             className="btn-secondary flex items-center gap-2"
           >
             <RotateCcw size={16} /> 重新开始

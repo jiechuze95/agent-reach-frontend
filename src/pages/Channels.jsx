@@ -1,11 +1,12 @@
-import React, { useEffect, useState } from 'react'
+import React, { useState, useRef, useEffect, useMemo, useDeferredValue } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
-  Search, Filter, ChevronDown, ChevronUp, ExternalLink,
+  Search, Filter, ChevronDown, ChevronUp,
   CheckCircle, AlertTriangle, XCircle, Activity, Loader2,
   ArrowLeft, Settings, RefreshCw
 } from 'lucide-react'
 import { api } from '../api/client'
+import EmptyState from '../components/EmptyState'
 
 const STATUS_FILTERS = [
   { key: 'all', label: '全部' },
@@ -21,6 +22,14 @@ const TIER_LABELS = {
   2: { label: '高级', color: 'badge-info' },
 }
 
+// StatusIcon defined outside Channels to avoid re-creation on every render
+function StatusIcon({ status }) {
+  if (status === 'ok') return <CheckCircle size={18} className="text-emerald-400" />
+  if (status === 'warn' || status === 'warning') return <AlertTriangle size={18} className="text-amber-400" />
+  if (status === 'error' || status === 'broken') return <XCircle size={18} className="text-red-400" />
+  return <Activity size={18} className="text-dark-400" />
+}
+
 export default function Channels() {
   const { name: selectedName } = useParams()
   const navigate = useNavigate()
@@ -31,12 +40,17 @@ export default function Channels() {
   const [expanded, setExpanded] = useState(null)
   const [detail, setDetail] = useState(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [error, setError] = useState(null)
 
   // Config dialog state
   const [configKey, setConfigKey] = useState('')
   const [configValue, setConfigValue] = useState('')
   const [configLoading, setConfigLoading] = useState(false)
   const [configMsg, setConfigMsg] = useState(null)
+
+  // Debounced search using useDeferredValue (React 18)
+  const deferredSearch = useDeferredValue(search)
+  const isStale = search !== deferredSearch
 
   useEffect(() => {
     loadChannels()
@@ -49,13 +63,28 @@ export default function Channels() {
     }
   }, [selectedName])
 
+  // Escape key listener for detail panel
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === 'Escape' && expanded) {
+        setExpanded(null)
+        setDetail(null)
+        if (selectedName) navigate('/channels')
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [expanded, selectedName, navigate])
+
   async function loadChannels() {
     setLoading(true)
+    setError(null)
     try {
       const data = await api.getChannels()
       setChannels(data.channels || [])
     } catch (e) {
       console.error('Failed to load channels:', e)
+      setError('加载渠道列表失败，请稍后重试')
     } finally {
       setLoading(false)
     }
@@ -69,6 +98,7 @@ export default function Channels() {
       setDetail(data)
     } catch (e) {
       console.error('Failed to load detail:', e)
+      setDetail(null)
     } finally {
       setDetailLoading(false)
     }
@@ -106,8 +136,8 @@ export default function Channels() {
     }
   }
 
-  // Filter channels
-  const filtered = channels.filter(ch => {
+  // Filter channels using deferredSearch for debounced filtering
+  const filtered = useMemo(() => channels.filter(ch => {
     if (filter !== 'all') {
       const s = ch.status
       if (filter === 'ok' && s !== 'ok') return false
@@ -115,19 +145,12 @@ export default function Channels() {
       if (filter === 'error' && s !== 'error' && s !== 'broken') return false
       if (filter === 'unknown' && s !== 'unknown') return false
     }
-    if (search) {
-      const q = search.toLowerCase()
+    if (deferredSearch) {
+      const q = deferredSearch.toLowerCase()
       return ch.name.toLowerCase().includes(q) || ch.description.toLowerCase().includes(q)
     }
     return true
-  })
-
-  function StatusIcon({ status }) {
-    if (status === 'ok') return <CheckCircle size={18} className="text-emerald-400" />
-    if (status === 'warn' || status === 'warning') return <AlertTriangle size={18} className="text-amber-400" />
-    if (status === 'error' || status === 'broken') return <XCircle size={18} className="text-red-400" />
-    return <Activity size={18} className="text-dark-400" />
-  }
+  }), [channels, filter, deferredSearch])
 
   return (
     <div className="space-y-4 animate-slide-in">
@@ -141,6 +164,7 @@ export default function Channels() {
             onChange={e => setSearch(e.target.value)}
             placeholder="搜索渠道..."
             className="input w-full pl-9"
+            aria-label="搜索渠道"
           />
         </div>
         <div className="flex items-center gap-1 bg-dark-800 rounded-lg p-1 border border-dark-700">
@@ -153,28 +177,36 @@ export default function Channels() {
                   ? 'bg-primary-600/20 text-primary-400'
                   : 'text-dark-400 hover:text-dark-200'
               }`}
+              aria-label={`筛选: ${f.label}`}
             >
               {f.label}
             </button>
           ))}
         </div>
-        <button onClick={loadChannels} disabled={loading} className="btn-secondary flex items-center gap-2">
+        <button onClick={loadChannels} disabled={loading} className="btn-secondary flex items-center gap-2" aria-label="刷新渠道列表">
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> 刷新
         </button>
       </div>
+
+      {/* Error State */}
+      {error && (
+        <div className="card border-red-600/20">
+          <div className="card-body text-center">
+            <p className="text-red-400 text-sm mb-3">{error}</p>
+            <button onClick={loadChannels} className="btn-secondary text-sm">重试</button>
+          </div>
+        </div>
+      )}
 
       {/* Channel List */}
       {loading ? (
         <div className="flex items-center justify-center py-16 text-dark-400 gap-2">
           <Loader2 size={20} className="animate-spin" /> 加载渠道列表...
         </div>
-      ) : filtered.length === 0 ? (
-        <div className="text-center py-16 text-dark-500 text-sm">
-          <Filter size={32} className="mx-auto mb-3 opacity-40" />
-          没有匹配的渠道
-        </div>
-      ) : (
-        <div className="space-y-2">
+      ) : !error && filtered.length === 0 ? (
+        <EmptyState icon={Filter} message="没有匹配的渠道" description="尝试调整筛选条件或搜索关键词" />
+      ) : !error ? (
+        <div className={`space-y-2 ${isStale ? 'opacity-60' : ''}`}>
           {filtered.map(ch => (
             <div key={ch.name} className="card">
               {/* Channel Header */}
@@ -191,7 +223,7 @@ export default function Channels() {
                     </span>
                   </div>
                   <div className="text-xs text-dark-500 mt-0.5">
-                    {ch.name} · 后端: {ch.backends?.join(', ')}
+                    {ch.name} &middot; 后端: {ch.backends?.join(', ')}
                   </div>
                 </div>
                 <StatusIcon status={ch.status} />
@@ -284,10 +316,10 @@ export default function Channels() {
             </div>
           ))}
         </div>
-      )}
+      ) : null}
 
       {/* Summary */}
-      {!loading && (
+      {!loading && !error && (
         <div className="text-xs text-dark-500 text-center py-2">
           显示 {filtered.length} / {channels.length} 个渠道
         </div>

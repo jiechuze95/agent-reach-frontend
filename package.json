@@ -1,11 +1,22 @@
 {
   "name": "agent-reach-frontend",
   "version": "1.0.0",
+  "description": "Agent Reach Frontend - React + FastAPI management dashboard",
+  "author": "jiechuze95",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jiechuze95/agent-reach-frontend"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "python server/main.py",
+    "dev:all": "concurrently \"npm run dev\" \"npm run server\"",
+    "lint": "eslint src/ --ext .js,.jsx",
+    "format": "prettier --write src/"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -19,6 +30,14 @@
     "vite": "^5.4.0",
     "tailwindcss": "^3.4.10",
     "postcss": "^8.4.41",
-    "autoprefixer": "^10.4.20"
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react": "^7.34.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "prettier": "^3.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

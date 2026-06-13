@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { api } from '../api/client'
 import { useStore } from '../store'
+import EmptyState from '../components/EmptyState'
 
 export default function Dashboard() {
   const navigate = useNavigate()
@@ -48,6 +49,39 @@ export default function Dashboard() {
     { label: '不可用', value: errChannels, icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10' },
   ]
 
+  // Loading skeleton while status is null
+  if (status === null) {
+    return (
+      <div className="space-y-6 animate-slide-in">
+        <div className="card">
+          <div className="card-body flex items-center gap-4">
+            <div className="w-12 h-12 rounded-xl bg-dark-700 animate-pulse" />
+            <div className="flex-1 space-y-2">
+              <div className="h-4 w-48 bg-dark-700 rounded animate-pulse" />
+              <div className="h-3 w-64 bg-dark-700 rounded animate-pulse" />
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="card">
+              <div className="card-body flex items-center gap-4">
+                <div className="w-11 h-11 rounded-xl bg-dark-700 animate-pulse" />
+                <div className="space-y-2">
+                  <div className="h-6 w-10 bg-dark-700 rounded animate-pulse" />
+                  <div className="h-3 w-16 bg-dark-700 rounded animate-pulse" />
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-center py-8 text-dark-400 gap-2">
+          <Loader2 size={18} className="animate-spin" /> 正在加载状态...
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-6 animate-slide-in">
       {/* Status Banner */}
@@ -61,7 +95,7 @@ export default function Dashboard() {
               <div className="flex-1">
                 <div className="font-medium text-emerald-400">Agent Reach 已安装</div>
                 <div className="text-sm text-dark-400 mt-0.5">
-                  {status.version || '版本未知'} · 路径: {status.path}
+                  {status.version || '版本未知'} &middot; 路径: {status.path}
                 </div>
               </div>
               <span className="badge badge-ok">在线</span>
@@ -83,8 +117,8 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="grid grid-cols-4 gap-4">
+      {/* Stats Grid - Responsive */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {stats.map(s => (
           <div key={s.label} className="card">
             <div className="card-body flex items-center gap-4">
@@ -101,7 +135,7 @@ export default function Dashboard() {
       </div>
 
       {/* Quick Actions + Doctor */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Quick Actions */}
         <div className="card">
           <div className="card-header">
@@ -136,6 +170,7 @@ export default function Dashboard() {
               onClick={handleRunDoctor}
               disabled={loading}
               className="text-dark-400 hover:text-dark-200 transition-colors"
+              aria-label="刷新健康检查"
             >
               <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
             </button>
@@ -147,9 +182,7 @@ export default function Dashboard() {
               </div>
             )}
             {!loading && !doctorResult && (
-              <div className="text-center py-6 text-dark-500 text-sm">
-                点击"运行健康检查"查看渠道状态
-              </div>
+              <EmptyState message="点击'运行健康检查'查看渠道状态" />
             )}
             {!loading && doctorResult && (
               <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -167,7 +200,7 @@ export default function Dashboard() {
                   <pre className="text-xs text-dark-400 whitespace-pre-wrap">{doctorResult.raw}</pre>
                 )}
                 {!doctorResult.channels?.length && !doctorResult.raw && (
-                  <div className="text-center text-dark-500 text-sm py-2">无检查结果</div>
+                  <EmptyState message="无检查结果" />
                 )}
               </div>
             )}
@@ -179,7 +212,12 @@ export default function Dashboard() {
       <div className="card">
         <div className="card-header">
           <span className="font-medium text-sm">渠道概览</span>
-          <button onClick={loadChannels} disabled={channelsLoading} className="text-dark-400 hover:text-dark-200 transition-colors">
+          <button
+            onClick={loadChannels}
+            disabled={channelsLoading}
+            className="text-dark-400 hover:text-dark-200 transition-colors"
+            aria-label="刷新渠道概览"
+          >
             <RefreshCw size={16} className={channelsLoading ? 'animate-spin' : ''} />
           </button>
         </div>
@@ -188,13 +226,24 @@ export default function Dashboard() {
             <div className="flex items-center justify-center py-8 text-dark-400 text-sm gap-2">
               <Loader2 size={18} className="animate-spin" /> 加载中...
             </div>
+          ) : channels.length === 0 ? (
+            <EmptyState icon={Layers} message="暂无渠道数据" description="请先安装 Agent Reach 或运行健康检查" />
           ) : (
-            <div className="grid grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {channels.map(ch => (
                 <div
                   key={ch.name}
                   onClick={() => navigate(`/channels/${ch.name}`)}
-                  className="flex items-center gap-3 p-3 rounded-lg bg-dark-900/50 border border-dark-700 hover:border-dark-500 cursor-pointer transition-colors"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      navigate(`/channels/${ch.name}`)
+                    }
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`查看渠道: ${ch.description}`}
+                  className="flex items-center gap-3 p-3 rounded-lg bg-dark-900/50 border border-dark-700 hover:border-dark-500 cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-500"
                 >
                   <span className="text-xl">{ch.icon}</span>
                   <div className="flex-1 min-w-0">
