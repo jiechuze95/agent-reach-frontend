@@ -29,3 +29,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Backend API token (auto-generated on first server start)
+server/.api-token

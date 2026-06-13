@@ -1,12 +1,46 @@
 const BASE_URL = '/api'
 const DEFAULT_TIMEOUT = 30000
 
+// ---------------------------------------------------------------------------
+// Token management - auto-fetch from /api/token on first use, then cache
+// ---------------------------------------------------------------------------
+let _token = null
+let _tokenPromise = null
+
+async function getToken() {
+  if (_token) return _token
+  if (_tokenPromise) return _tokenPromise
+
+  _tokenPromise = fetch(`${BASE_URL}/token`)
+    .then(res => {
+      if (!res.ok) throw new Error(`Token fetch failed: HTTP ${res.status}`)
+      return res.json()
+    })
+    .then(data => {
+      _token = data.token
+      _tokenPromise = null
+      return _token
+    })
+    .catch(err => {
+      _tokenPromise = null
+      throw err
+    })
+
+  return _tokenPromise
+}
+
 async function request(path, options = {}) {
   const { timeout = DEFAULT_TIMEOUT, ...fetchOptions } = options
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), timeout)
 
-  const headers = { 'Content-Type': 'application/json', ...fetchOptions.headers }
+  // Fetch the token and attach as Bearer header
+  const token = await getToken()
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+    ...fetchOptions.headers,
+  }
 
   try {
     const res = await fetch(`${BASE_URL}${path}`, {
@@ -56,7 +90,22 @@ export const api = {
   getHistory: (timeout) => request('/history', { timeout }),
 }
 
-export function connectTerminal() {
+// ---------------------------------------------------------------------------
+// WebSocket terminal connection - token passed as query parameter
+// ---------------------------------------------------------------------------
+
+/**
+ * Open a WebSocket connection to the terminal backend.
+ * @param {string} [token] - Bearer token; if omitted the caller must
+ *   have already obtained one via getToken().
+ */
+export async function connectTerminal(token) {
+  // If no token supplied, fetch it (uses cache after first call)
+  if (!token) {
+    token = await getToken()
+  }
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  return new WebSocket(`${protocol}//${window.location.host}/ws/terminal`)
+  return new WebSocket(
+    `${protocol}//${window.location.host}/ws/terminal?token=${encodeURIComponent(token)}`
+  )
 }

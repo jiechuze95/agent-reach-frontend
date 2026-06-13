@@ -45,9 +45,23 @@ CORS_ORIGINS: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Token-based authentication (#1)
+# Token-based authentication (#1) - persistent token via file
 # ---------------------------------------------------------------------------
-API_TOKEN: str = secrets.token_urlsafe(32)
+_TOKEN_FILE = Path(__file__).resolve().parent / ".api-token"
+
+
+def _load_or_create_token() -> str:
+    """Read the token from .api-token if it exists; otherwise generate and save one."""
+    if _TOKEN_FILE.is_file():
+        token = _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        if token:
+            return token
+    token = secrets.token_urlsafe(32)
+    _TOKEN_FILE.write_text(token, encoding="utf-8")
+    return token
+
+
+API_TOKEN: str = _load_or_create_token()
 
 # ---------------------------------------------------------------------------
 # Pre-compiled regex (#24)
@@ -133,10 +147,11 @@ async def lifespan(app: FastAPI):
     logger.info("Agent Reach Manager started")
     logger.info("  agent-reach path: %s", ar if ar else "(not found)")
     logger.info("  API: http://127.0.0.1:%d", SERVER_PORT)
-    logger.info("  API Token: %s", API_TOKEN)
+    logger.info("  API Token: %s (file: %s)", API_TOKEN, _TOKEN_FILE)
     print(f"\n{'='*60}")
     print(f"  Agent Reach Manager API Token:")
     print(f"  {API_TOKEN}")
+    print(f"  Token file: {_TOKEN_FILE}")
     print(f"{'='*60}\n")
     yield
     # --- shutdown (#16) ---
@@ -168,7 +183,7 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Authentication middleware (#1)
 # ---------------------------------------------------------------------------
-AUTH_EXEMPT_PATHS: set[str] = {"/api/watch", "/docs", "/openapi.json", "/redoc"}
+AUTH_EXEMPT_PATHS: set[str] = {"/api/watch", "/api/token", "/docs", "/openapi.json", "/redoc"}
 
 
 @app.middleware("http")
@@ -746,6 +761,18 @@ async def watch() -> dict:
         "agent_reach_installed": ar_ok,
         "timestamp": datetime.now(timezone.utc).isoformat(),  # (#25)
     }
+
+
+# 12b. GET /api/token - return the API token (dev-mode convenience, exempt from auth)
+@app.get("/api/token")
+async def get_token() -> dict:
+    """Return the current API token.
+
+    This endpoint exists so the frontend can automatically authenticate
+    without the user needing to copy the token manually.  In a production
+    deployment this should be disabled or removed.
+    """
+    return {"token": API_TOKEN}
 
 
 # 13. GET /api/history - command execution history

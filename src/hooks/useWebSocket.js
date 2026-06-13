@@ -15,8 +15,12 @@ export function useWebSocket() {
   const connect = useCallback(() => {
     if (!mountedRef.current) return
 
-    try {
-      const ws = connectTerminal()
+    // connectTerminal is async - it fetches the token before opening the WS
+    connectTerminal().then(ws => {
+      if (!mountedRef.current) {
+        ws.close()
+        return
+      }
       wsRef.current = ws
 
       ws.onopen = () => {
@@ -69,9 +73,11 @@ export function useWebSocket() {
           setRunning(false)
         }
       }
-    } catch {
+    }).catch(() => {
+      // Token fetch failed or WS creation error - retry
+      if (!mountedRef.current) return
       scheduleReconnect()
-    }
+    })
   }, [])
 
   const scheduleReconnect = useCallback(() => {
