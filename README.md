@@ -20,29 +20,37 @@ A modern web-based management dashboard for [Agent Reach](https://github.com/Pan
 
 ```
 agent-reach-frontend/
+├── .github/                  # CI/CD workflows
 ├── server/
-│   └── main.py              # FastAPI backend (13 REST + 1 WebSocket endpoint)
+│   └── main.py               # FastAPI backend (REST + WebSocket endpoints)
 ├── src/
-│   ├── api/client.js         # API client with typed methods
-│   ├── hooks/useWebSocket.js # WebSocket hook for terminal streaming
+│   ├── api/client.js          # API client with typed methods
+│   ├── components/            # Reusable UI components
+│   ├── hooks/useWebSocket.js  # WebSocket hook for terminal streaming
 │   ├── pages/
-│   │   ├── Dashboard.jsx     # Status overview & health check
-│   │   ├── Channels.jsx      # Channel list, filtering & configuration
-│   │   ├── Install.jsx       # 4-step installation wizard
-│   │   ├── Settings.jsx      # Config, skills, updates & uninstall
-│   │   └── Terminal.jsx      # Real-time command terminal
-│   ├── App.jsx               # Layout, sidebar & routing
-│   ├── store.js              # Zustand global state
-│   ├── index.css             # TailwindCSS dark theme styles
-│   └── main.jsx              # Entry point
+│   │   ├── Dashboard.jsx      # Status overview & health check
+│   │   ├── Channels.jsx       # Channel list, filtering & configuration
+│   │   ├── Install.jsx        # 4-step installation wizard
+│   │   ├── Settings.jsx       # Config, skills, updates & uninstall
+│   │   └── Terminal.jsx       # Real-time command terminal
+│   ├── App.jsx                # Layout, sidebar & routing
+│   ├── store.js               # Zustand global state
+│   ├── index.css              # TailwindCSS dark theme styles
+│   └── main.jsx               # Entry point
+├── .env.example               # Environment variable template
+├── .eslintrc.cjs              # ESLint configuration
+├── .prettierrc                # Prettier configuration
+├── Dockerfile                 # Multi-stage Docker build
+├── docker-compose.yml         # Docker Compose configuration
 ├── index.html
+├── requirements.txt           # Python dependencies
 ├── vite.config.js
 ├── tailwind.config.js
 ├── package.json
 └── README.md
 ```
 
-**Backend** (Python FastAPI, port 8001) acts as a proxy to the `agent-reach` CLI, exposing 13 REST API endpoints for status, doctor, channels, configuration, installation, uninstall, skills, transcription, update checking, and command history, plus a WebSocket endpoint for streaming terminal output.
+**Backend** (Python FastAPI, port 8001) acts as a proxy to the `agent-reach` CLI, exposing REST API endpoints for status, doctor, channels, configuration, installation, uninstall, skills, transcription, update checking, command history, and authentication, plus a WebSocket endpoint for streaming terminal output.
 
 **Frontend** (React 18 + Vite 5) uses TailwindCSS for a dark-themed UI, Zustand for state management, lucide-react for icons, and react-router-dom for navigation. The Vite dev server proxies all `/api` and `/ws` requests to the backend.
 
@@ -79,10 +87,32 @@ npm run dev
 
 The dev server starts at `http://localhost:5173` with API requests automatically proxied to the backend.
 
+## Docker Deployment
+
+```bash
+docker compose up -d
+```
+The app will be available at http://localhost:8001.
+
+### Environment Variables
+| Variable | Default | Description |
+|----------|---------|-------------|
+| PORT | 8001 | Backend server port |
+| HOST | 127.0.0.1 | Bind address (use 0.0.0.0 for Docker) |
+| CORS_ORIGINS | http://localhost:5173,http://localhost:3000 | Allowed CORS origins |
+| DEV_MODE | true | Enable /api/token endpoint for dev convenience |
+
+## Authentication
+
+The backend uses token-based authentication. On first startup, a random token is generated and saved to `server/.api-token`. The frontend automatically retrieves the token via the `/api/token` endpoint (development mode) and attaches it to all API requests.
+
+In production, set `DEV_MODE=false` and configure authentication through your reverse proxy.
+
 ## API Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
+| GET | `/api/token` | Get auth token (dev mode only) |
 | GET | `/api/status` | Agent Reach installation status & tool availability |
 | GET | `/api/doctor` | Run health check across all channels |
 | GET | `/api/channels` | List all channels with merged health status |

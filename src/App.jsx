@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import { Routes, Route, NavLink, useLocation, Link } from 'react-router-dom'
 import { LayoutDashboard, Layers, Download, Settings, Terminal, Menu, X } from 'lucide-react'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -32,7 +32,17 @@ export default function App() {
   const status = useStore(s => s.status)
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
-  const version = status?.version || '1.5.0'
+  // Close sidebar on Escape key
+  useEffect(() => {
+    if (!sidebarOpen) return
+    function handleKeyDown(e) {
+      if (e.key === 'Escape') setSidebarOpen(false)
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    return () => document.removeEventListener('keydown', handleKeyDown)
+  }, [sidebarOpen])
+
+  const version = status?.version || '--'
 
   const currentTitle = (() => {
     const item = NAV_ITEMS.find(n =>
@@ -40,7 +50,8 @@ export default function App() {
         ? location.pathname === '/'
         : location.pathname.startsWith(n.path)
     )
-    return item?.label || 'Agent Reach'
+    if (!item) return '页面未找到'
+    return item.label
   })()
 
   return (
@@ -51,6 +62,8 @@ export default function App() {
           <div
             className="fixed inset-0 bg-black/50 z-40 lg:hidden"
             onClick={() => setSidebarOpen(false)}
+            role="dialog"
+            aria-modal="true"
           />
         )}
 

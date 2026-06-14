@@ -21,7 +21,17 @@ export default class ErrorBoundary extends React.Component {
           <div className="text-4xl">&#x1F635;</div>
           <h2 className="text-xl font-semibold">页面出现错误</h2>
           <p className="text-dark-400 text-sm">{this.state.error?.message}</p>
-          <button onClick={() => window.location.reload()} className="btn-primary">刷新页面</button>
+          <div className="flex gap-3">
+            <button
+              onClick={() => this.setState({ hasError: false, error: null })}
+              className="btn-primary"
+            >
+              重试
+            </button>
+            <button onClick={() => window.location.reload()} className="btn-secondary">
+              刷新页面
+            </button>
+          </div>
         </div>
       )
     }

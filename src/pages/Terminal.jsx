@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import {
   Play, Square, Trash2, Wifi, WifiOff, Clock,
   Copy, Check, Loader2
@@ -20,6 +20,7 @@ export default function TerminalPage() {
   const [historyIndex, setHistoryIndex] = useState(-1)
   const [serverHistory, setServerHistory] = useState([])
   const [copied, setCopied] = useState(false)
+  const [copyFailed, setCopyFailed] = useState(false)
 
   const terminalRef = useRef(null)
   const inputRef = useRef(null)
@@ -45,6 +46,26 @@ export default function TerminalPage() {
       }
     }
   }, [])
+
+  // Warn before closing/leaving during active command
+  useEffect(() => {
+    if (!running) return
+    function handleBeforeUnload(e) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [running])
+
+  // Refresh server history when a command finishes (running transitions to false)
+  const prevRunningRef = useRef(false)
+  useEffect(() => {
+    if (prevRunningRef.current && !running) {
+      loadServerHistory()
+    }
+    prevRunningRef.current = running
+  }, [running])
 
   async function loadServerHistory() {
     try {
@@ -100,9 +121,11 @@ export default function TerminalPage() {
     try {
       await navigator.clipboard.writeText(text)
       setCopied(true)
+      setCopyFailed(false)
       copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000)
     } catch (e) {
-      // ignore
+      setCopyFailed(true)
+      copyTimeoutRef.current = setTimeout(() => setCopyFailed(false), 2000)
     }
   }, [output])
 
@@ -154,7 +177,7 @@ export default function TerminalPage() {
           aria-label="复制终端输出"
         >
           {copied ? <Check size={12} className="text-emerald-400" /> : <Copy size={12} />}
-          {copied ? '已复制' : '复制输出'}
+          {copied ? '已复制' : copyFailed ? '复制失败' : '复制输出'}
         </button>
         <button
           onClick={clear}

@@ -134,5 +134,5 @@ export function useWebSocket() {
 
   const clear = useCallback(() => setOutput([]), [])
 
-  return { output, connected, running, send, interrupt, clear, reconnect }
+  return { output, setOutput, connected, running, send, interrupt, clear, reconnect }
 }

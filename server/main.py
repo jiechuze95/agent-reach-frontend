@@ -3,6 +3,7 @@ Agent Reach Frontend - Backend API Server
 FastAPI proxy for agent-reach CLI commands
 """
 import asyncio
+import hmac  # Fix #2: timing-safe comparison
 import importlib.util
 import json
 import logging
@@ -12,6 +13,7 @@ import secrets
 import shlex
 import shutil
 import sys
+from collections import deque  # Fix #14: deque for history
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,9 +35,16 @@ logging.basicConfig(
 logger = logging.getLogger("agent-reach-server")
 
 # ---------------------------------------------------------------------------
-# Configuration from environment (#20, #21)
+# Configuration from environment (#20, #21, Fix #7, #11)
 # ---------------------------------------------------------------------------
-SERVER_PORT: int = int(os.environ.get("PORT", "8001"))
+try:
+    SERVER_PORT: int = int(os.environ.get("PORT", "8001"))
+except (ValueError, TypeError):
+    SERVER_PORT = 8001
+
+SERVER_HOST: str = os.environ.get("HOST", "127.0.0.1")  # Fix #7: Docker host binding
+DEV_MODE: bool = os.environ.get("DEV_MODE", "true").lower() in ("true", "1", "yes")  # Fix #4
+
 CORS_ORIGINS: list[str] = [
     origin.strip()
     for origin in os.environ.get(
@@ -58,6 +67,9 @@ def _load_or_create_token() -> str:
             return token
     token = secrets.token_urlsafe(32)
     _TOKEN_FILE.write_text(token, encoding="utf-8")
+    # Fix #5: restrict token file permissions on Unix
+    if os.name != 'nt':
+        os.chmod(_TOKEN_FILE, 0o600)
     return token
 
 
@@ -71,10 +83,11 @@ DOCTOR_LINE_RE: re.Pattern[str] = re.compile(
 )
 
 # ---------------------------------------------------------------------------
-# Doctor result cache (#8) - 60-second TTL
+# Doctor result cache (#8) - 60-second TTL with lock (Fix #9)
 # ---------------------------------------------------------------------------
 _doctor_cache: dict = {"result": None, "timestamp": 0.0}
 DOCTOR_CACHE_TTL: float = 60.0
+_doctor_lock = asyncio.Lock()  # Fix #9: lock for cache
 
 # ---------------------------------------------------------------------------
 # Active subprocess tracking (#16)
@@ -118,14 +131,17 @@ VALID_CONFIG_KEYS: set[str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Subprocess environment sanitization (#22)
+# Subprocess environment sanitization (#22, Fix #10: Windows vars)
 # ---------------------------------------------------------------------------
 
 
 def _sanitize_env() -> dict[str, str]:
     """Return a minimal, safe environment dict for subprocesses."""
     env: dict[str, str] = {}
-    for key in ("PATH", "HOME", "USER", "LANG", "PYTHONIOENCODING"):
+    # Fix #10: include Windows-critical vars
+    for key in ("PATH", "HOME", "USER", "LANG", "PYTHONIOENCODING",
+                "SYSTEMROOT", "TEMP", "TMP", "APPDATA", "LOCALAPPDATA",
+                "COMSPEC", "WINDIR", "PATHEXT"):
         val = os.environ.get(key)
         if val is not None:
             env[key] = val
@@ -146,8 +162,10 @@ async def lifespan(app: FastAPI):
     ar = await asyncio.to_thread(find_agent_reach)
     logger.info("Agent Reach Manager started")
     logger.info("  agent-reach path: %s", ar if ar else "(not found)")
-    logger.info("  API: http://127.0.0.1:%d", SERVER_PORT)
-    logger.info("  API Token: %s (file: %s)", API_TOKEN, _TOKEN_FILE)
+    logger.info("  API: http://%s:%d", SERVER_HOST, SERVER_PORT)
+    # Fix #1: mask token in logs (only first 4 chars)
+    logger.info("  API Token: %s**** (file: %s)", API_TOKEN[:4], _TOKEN_FILE)
+    # Keep full token in stdout for operator
     print(f"\n{'='*60}")
     print(f"  Agent Reach Manager API Token:")
     print(f"  {API_TOKEN}")
@@ -181,9 +199,9 @@ app.add_middleware(
 
 
 # ---------------------------------------------------------------------------
-# Authentication middleware (#1)
+# Authentication middleware (#1, Fix #2: timing-safe, Fix #17: /assets)
 # ---------------------------------------------------------------------------
-AUTH_EXEMPT_PATHS: set[str] = {"/api/watch", "/api/token", "/docs", "/openapi.json", "/redoc"}
+AUTH_EXEMPT_PATHS: set[str] = {"/api/watch", "/api/token", "/docs", "/openapi.json", "/redoc", "/", "/index.html"}
 
 
 @app.middleware("http")
@@ -192,12 +210,13 @@ async def auth_and_logging_middleware(request: Request, call_next):
     # Log incoming request (#13)
     logger.info(">>> %s %s", request.method, request.url.path)
 
-    # Exempt paths
-    if request.url.path in AUTH_EXEMPT_PATHS or request.url.path.startswith("/static"):
+    # Exempt paths (Fix #17: /assets instead of /static)
+    if request.url.path in AUTH_EXEMPT_PATHS or request.url.path.startswith("/assets"):
         return await call_next(request)
 
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer ") or auth_header[7:] != API_TOKEN:
+    # Fix #2: timing-safe comparison
+    if not auth_header.startswith("Bearer ") or not hmac.compare_digest(auth_header[7:], API_TOKEN):
         logger.warning("Unauthorized request to %s", request.url.path)
         return JSONResponse(status_code=401, content={"detail": "Unauthorized: invalid or missing Bearer token"})
 
@@ -206,10 +225,10 @@ async def auth_and_logging_middleware(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
-# Command history (#6 - race condition fix applied at usage sites)
+# Command history (#6, Fix #14: deque)
 # ---------------------------------------------------------------------------
-command_history: list[dict] = []
 MAX_HISTORY: int = 50
+command_history: deque = deque(maxlen=MAX_HISTORY)
 
 
 def _add_history(command: str, status: str = "running", returncode: int | None = None) -> dict:
@@ -221,8 +240,7 @@ def _add_history(command: str, status: str = "running", returncode: int | None =
         "returncode": returncode,
     }
     command_history.append(entry)
-    if len(command_history) > MAX_HISTORY:
-        command_history.pop(0)
+    # deque with maxlen automatically trims old entries
     return entry
 
 
@@ -295,12 +313,13 @@ _VALID_CHANNEL_NAMES: set[str] = {ch["name"] for ch in CHANNELS_INFO}
 # ---------------------------------------------------------------------------
 
 
-def _mask_sensitive(data: dict) -> dict:
-    """Return a copy of *data* with sensitive values masked (#3).
+def _mask_sensitive(data) -> dict:
+    """Return a copy of *data* with sensitive values masked (#3, Fix #12: recursive).
 
     Sensitive key patterns: token, key, secret, password, cookie, credential, auth, api_key.
     Values with length <= 4 are replaced with '****'.
     Longer values show the first 2 characters followed by '****'.
+    Handles nested dicts and lists recursively.
     """
     sensitive_patterns: list[str] = [
         "token", "key", "secret", "password", "cookie",
@@ -308,7 +327,19 @@ def _mask_sensitive(data: dict) -> dict:
     ]
     masked: dict = {}
     for k, v in data.items():
-        if isinstance(v, str) and any(s in k.lower() for s in sensitive_patterns):
+        if isinstance(v, dict):
+            # Fix #12: recurse into nested dicts
+            masked[k] = _mask_sensitive(v)
+        elif isinstance(v, list):
+            # Fix #12: check each item in list
+            masked_list = []
+            for item in v:
+                if isinstance(item, dict):
+                    masked_list.append(_mask_sensitive(item))
+                else:
+                    masked_list.append(item)
+            masked[k] = masked_list
+        elif isinstance(v, str) and any(s in k.lower() for s in sensitive_patterns):
             if len(v) <= 4:
                 masked[k] = "****"
             else:
@@ -339,6 +370,8 @@ async def run_command(cmd: list[str], timeout: int = 120) -> dict:
         finally:
             _active_processes.discard(proc)
     except asyncio.TimeoutError:
+        # Fix #3: terminate process on timeout to avoid zombie
+        await _terminate_process(proc)
         return {"success": False, "output": "", "error": f"命令超时 (>{timeout}s)", "returncode": -1}
     except FileNotFoundError:
         return {"success": False, "output": "", "error": f"命令未找到: {cmd[0]}", "returncode": -1}
@@ -363,15 +396,19 @@ def find_agent_reach() -> str | None:
     return None
 
 
-def _require_agent_reach() -> str:
-    """Return agent-reach path or raise HTTPException(404) (#9)."""
-    ar = find_agent_reach()
+async def _require_agent_reach() -> str:
+    """Return agent-reach path or raise HTTPException(404) (#9, Fix #8: async)."""
+    ar = await asyncio.to_thread(find_agent_reach)
     if ar is None:
         raise HTTPException(
             status_code=404,
             detail="agent-reach is not installed or not found on PATH. Please install it first.",
         )
     return ar
+
+
+# Fix #21: check yaml availability at module level
+_HAS_YAML = importlib.util.find_spec("yaml") is not None
 
 
 def _read_config_file() -> dict:
@@ -383,27 +420,28 @@ def _read_config_file() -> dict:
     if not config_path.exists():
         return {"_raw": "", "_path": str(config_path), "_exists": False}
     try:
-        import yaml
-        with open(config_path, "r", encoding="utf-8") as f:
-            data: dict = yaml.safe_load(f) or {}
-        data = _mask_sensitive(data)
-        return {"_raw": "", "_path": str(config_path), "_exists": True, "data": data}
-    except ImportError:
-        with open(config_path, "r", encoding="utf-8") as f:
-            raw = f.read()
-        # Simple key: value parsing as fallback
-        data = {}
-        for line in raw.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if ":" in line:
-                k, _, v = line.partition(":")
-                k, v = k.strip(), v.strip()
-                data[k] = v
-        # Mask sensitive values AFTER parsing (#3)
-        data = _mask_sensitive(data)
-        return {"_raw": raw, "_path": str(config_path), "_exists": True, "data": data}
+        if _HAS_YAML:
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                data: dict = yaml.safe_load(f) or {}
+            data = _mask_sensitive(data)
+            return {"_raw": "", "_path": str(config_path), "_exists": True, "data": data}
+        else:
+            with open(config_path, "r", encoding="utf-8") as f:
+                raw = f.read()
+            # Simple key: value parsing as fallback
+            data = {}
+            for line in raw.splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if ":" in line:
+                    k, _, v = line.partition(":")
+                    k, v = k.strip(), v.strip()
+                    data[k] = v
+            # Mask sensitive values AFTER parsing (#3)
+            data = _mask_sensitive(data)
+            return {"_raw": raw, "_path": str(config_path), "_exists": True, "data": data}
     except Exception as e:
         logger.error("Error reading config: %s", e)
         return {"_raw": "", "_path": str(config_path), "_exists": True, "_error": str(e)}
@@ -492,18 +530,11 @@ async def get_status() -> dict:
         if result["success"]:
             version = result["output"].strip()
 
-    # Check upstream tools - feedparser uses importlib (#15)
-    tools: dict[str, bool] = {
-        "yt-dlp": await asyncio.to_thread(_check_tool, "yt-dlp"),
-        "twitter": await asyncio.to_thread(_check_tool, "twitter"),
-        "gh": await asyncio.to_thread(_check_tool, "gh"),
-        "node": await asyncio.to_thread(_check_tool, "node"),
-        "npm": await asyncio.to_thread(_check_tool, "npm"),
-        "opencli": await asyncio.to_thread(_check_tool, "opencli"),
-        "bili": await asyncio.to_thread(_check_tool, "bili"),
-        "rdt": await asyncio.to_thread(_check_tool, "rdt"),
-        "feedparser": importlib.util.find_spec("feedparser") is not None,  # (#15)
-    }
+    # Fix #15: parallel tool checks using asyncio.gather
+    tool_names = ["yt-dlp", "twitter", "gh", "node", "npm", "opencli", "bili", "rdt"]
+    results = await asyncio.gather(*[asyncio.to_thread(_check_tool, t) for t in tool_names])
+    tools = dict(zip(tool_names, results))
+    tools["feedparser"] = importlib.util.find_spec("feedparser") is not None
 
     return {
         "installed": ar_installed,
@@ -515,54 +546,56 @@ async def get_status() -> dict:
 
 async def _get_doctor_internal() -> dict:
     """Core doctor logic without rate limiting (for internal calls)."""
-    # Check cache (#8)
-    now = datetime.now(timezone.utc).timestamp()
-    if _doctor_cache["result"] is not None and (now - _doctor_cache["timestamp"]) < DOCTOR_CACHE_TTL:
-        logger.info("Returning cached doctor result")
-        return _doctor_cache["result"]
+    # Fix #9: wrap cache check + execute in lock
+    async with _doctor_lock:
+        # Check cache (#8)
+        now = datetime.now(timezone.utc).timestamp()
+        if _doctor_cache["result"] is not None and (now - _doctor_cache["timestamp"]) < DOCTOR_CACHE_TTL:
+            logger.info("Returning cached doctor result")
+            return _doctor_cache["result"]
 
-    ar = _require_agent_reach()  # (#9)
+        ar = await _require_agent_reach()  # (#9, Fix #8: async)
 
-    # Try --json first
-    result = await run_command([ar, "doctor", "--json"], timeout=90)
-    if result["success"]:
-        try:
-            data = json.loads(result["output"])
-            response = {"success": True, "data": data, "raw": result["output"]}
-            _doctor_cache["result"] = response
-            _doctor_cache["timestamp"] = now
-            return response
-        except json.JSONDecodeError:
-            pass
+        # Try --json first
+        result = await run_command([ar, "doctor", "--json"], timeout=90)
+        if result["success"]:
+            try:
+                data = json.loads(result["output"])
+                response = {"success": True, "data": data, "raw": result["output"]}
+                _doctor_cache["result"] = response
+                _doctor_cache["timestamp"] = now
+                return response
+            except json.JSONDecodeError:
+                pass
 
-    # Fallback: parse text output
-    result = await run_command([ar, "doctor"], timeout=90)
-    channels: list[dict] = []
-    if result["success"] or result["output"]:
-        for line in result["output"].splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Use pre-compiled regex (#24)
-            m = DOCTOR_LINE_RE.match(line)
-            if m:
-                channels.append({
-                    "status": m.group(1).lower(),
-                    "name": m.group(2),
-                    "detail": m.group(3).strip(),
-                })
-            else:
-                channels.append({"status": "info", "name": "", "detail": line})
+        # Fallback: parse text output
+        result = await run_command([ar, "doctor"], timeout=90)
+        channels: list[dict] = []
+        if result["success"] or result["output"]:
+            for line in result["output"].splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # Use pre-compiled regex (#24)
+                m = DOCTOR_LINE_RE.match(line)
+                if m:
+                    channels.append({
+                        "status": m.group(1).lower(),
+                        "name": m.group(2),
+                        "detail": m.group(3).strip(),
+                    })
+                else:
+                    channels.append({"status": "info", "name": "", "detail": line})
 
-    response = {
-        "success": result["success"],
-        "channels": channels,
-        "raw": result["output"],
-        "error": result["error"],
-    }
-    _doctor_cache["result"] = response
-    _doctor_cache["timestamp"] = now
-    return response
+        response = {
+            "success": result["success"],
+            "channels": channels,
+            "raw": result["output"],
+            "error": result["error"],
+        }
+        _doctor_cache["result"] = response
+        _doctor_cache["timestamp"] = now
+        return response
 
 
 # 2. GET /api/doctor - run health check (with caching #8)
@@ -631,7 +664,7 @@ async def get_channel(name: str) -> dict:
 @app.post("/api/configure")
 async def configure_channel(req: ConfigureRequest) -> dict:
     """Run agent-reach configure <key> <value>."""
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
 
     # Validate key (#4)
     if req.key.startswith("-"):
@@ -642,13 +675,12 @@ async def configure_channel(req: ConfigureRequest) -> dict:
             detail=f"Unknown config key: '{req.key}'. Valid keys: {', '.join(sorted(VALID_CONFIG_KEYS))}",
         )
 
-    entry = _add_history(f"agent-reach configure {req.key} ****")  # (#6)
+    cmd: list[str] = [ar, "configure", "--", req.key, req.value]
+    # Fix #16: history-friendly command strings
+    history_cmd = " ".join(cmd).replace(ar, "agent-reach")
+    entry = _add_history(history_cmd)  # (#6)
     # Use -- separator before positional arguments (#4)
-    result = await _run_and_track(
-        [ar, "configure", "--", req.key, req.value],
-        entry,
-        timeout=30,
-    )
+    result = await _run_and_track(cmd, entry, timeout=30)
     return result
 
 
@@ -664,7 +696,7 @@ async def get_config() -> dict:
 async def install(req: InstallRequest) -> dict:
     """Run agent-reach install with the given options."""
     _check_rate_limit("install")  # (#19)
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
 
     # Validate channels (#5)
     for ch_name in req.channels:
@@ -689,7 +721,9 @@ async def install(req: InstallRequest) -> dict:
         cmd.append("--")
         cmd.extend(req.channels)
 
-    entry = _add_history(" ".join(cmd))  # (#6)
+    # Fix #16: history-friendly command strings
+    history_cmd = " ".join(cmd).replace(ar, "agent-reach")
+    entry = _add_history(history_cmd)  # (#6)
     result = await _run_and_track(cmd, entry, timeout=300)  # (#18)
     return result
 
@@ -699,7 +733,7 @@ async def install(req: InstallRequest) -> dict:
 async def uninstall(req: UninstallRequest) -> dict:
     """Run agent-reach uninstall."""
     _check_rate_limit("uninstall")  # (#19)
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
 
     cmd: list[str] = [ar, "uninstall"]
     if req.dry_run:
@@ -707,7 +741,9 @@ async def uninstall(req: UninstallRequest) -> dict:
     if req.keep_config:
         cmd.append("--keep-config")
 
-    entry = _add_history(" ".join(cmd))  # (#6)
+    # Fix #16: history-friendly command strings
+    history_cmd = " ".join(cmd).replace(ar, "agent-reach")
+    entry = _add_history(history_cmd)  # (#6)
     result = await _run_and_track(cmd, entry, timeout=60)  # (#18)
     return result
 
@@ -716,10 +752,12 @@ async def uninstall(req: UninstallRequest) -> dict:
 @app.post("/api/skill")
 async def manage_skill(req: SkillRequest) -> dict:
     """Install or uninstall the agent-reach skill."""
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
     cmd: list[str] = [ar, "skill", f"--{req.action}"]
 
-    entry = _add_history(" ".join(cmd))  # (#6)
+    # Fix #16: history-friendly command strings
+    history_cmd = " ".join(cmd).replace(ar, "agent-reach")
+    entry = _add_history(history_cmd)  # (#6)
     result = await _run_and_track(cmd, entry, timeout=60)  # (#18)
     return result
 
@@ -728,7 +766,7 @@ async def manage_skill(req: SkillRequest) -> dict:
 @app.post("/api/transcribe")
 async def transcribe(req: TranscribeRequest) -> dict:
     """Transcribe audio/video from a source URL."""
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
 
     # Validate source URL (#5)
     if not _validate_url(req.source):
@@ -736,7 +774,9 @@ async def transcribe(req: TranscribeRequest) -> dict:
 
     cmd: list[str] = [ar, "transcribe", "--", req.source, f"--provider={req.provider}"]
 
-    entry = _add_history(" ".join(cmd))  # (#6)
+    # Fix #16: history-friendly command strings
+    history_cmd = " ".join(cmd).replace(ar, "agent-reach")
+    entry = _add_history(history_cmd)  # (#6)
     result = await _run_and_track(cmd, entry, timeout=600)  # (#18)
     return result
 
@@ -745,7 +785,7 @@ async def transcribe(req: TranscribeRequest) -> dict:
 @app.get("/api/check-update")
 async def check_update() -> dict:
     """Check if there is a newer version of agent-reach."""
-    ar = _require_agent_reach()  # (#9)
+    ar = await _require_agent_reach()  # (#9, Fix #8: async)
     result = await run_command([ar, "check-update"], timeout=30)
     return result
 
@@ -763,7 +803,7 @@ async def watch() -> dict:
     }
 
 
-# 12b. GET /api/token - return the API token (dev-mode convenience, exempt from auth)
+# 12b. GET /api/token - return the API token (Fix #4: gated behind DEV_MODE)
 @app.get("/api/token")
 async def get_token() -> dict:
     """Return the current API token.
@@ -772,6 +812,9 @@ async def get_token() -> dict:
     without the user needing to copy the token manually.  In a production
     deployment this should be disabled or removed.
     """
+    # Fix #4: only available in dev mode
+    if not DEV_MODE:
+        raise HTTPException(status_code=404, detail="Not found")
     return {"token": API_TOKEN}
 
 
@@ -783,7 +826,7 @@ async def get_history() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket terminal (#1 auth, #10 JSON parsing, #11 shlex, #12 timeout)
+# WebSocket terminal (#1 auth, #10 JSON parsing, #11 shlex, #12 timeout, Fix #2, #13)
 # ---------------------------------------------------------------------------
 
 
@@ -793,8 +836,8 @@ async def websocket_terminal(
     token: str = Query(default=""),
 ) -> None:
     """WebSocket terminal for real-time command execution."""
-    # Token auth via query parameter (#1)
-    if token != API_TOKEN:
+    # Fix #2: timing-safe token comparison
+    if not hmac.compare_digest(token, API_TOKEN):
         await websocket.close(code=4401, reason="Unauthorized")
         return
 
@@ -803,6 +846,11 @@ async def websocket_terminal(
     try:
         while True:
             data = await websocket.receive_text()
+
+            # Fix #13: WebSocket message size limit
+            if len(data) > 65536:  # 64KB max
+                await websocket.send_json({"type": "error", "text": "Message too large (max 64KB)"})
+                continue
 
             # Safe JSON parsing (#10)
             try:
@@ -933,7 +981,7 @@ async def websocket_terminal(
 
 
 # ---------------------------------------------------------------------------
-# Production static file serving (#28)
+# Production static file serving (#28, Fix #6: exclude API paths)
 # ---------------------------------------------------------------------------
 _DIST_DIR = Path(__file__).resolve().parent.parent / "dist"
 if _DIST_DIR.is_dir():
@@ -944,6 +992,9 @@ if _DIST_DIR.is_dir():
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str) -> FileResponse:
         """Serve static files or fall back to index.html for SPA routing."""
+        # Fix #6: exclude API and WebSocket paths
+        if full_path.startswith("api/") or full_path.startswith("ws/"):
+            raise HTTPException(status_code=404, detail="API endpoint not found")
         file_path = _DIST_DIR / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
@@ -951,9 +1002,10 @@ if _DIST_DIR.is_dir():
 
 
 # ---------------------------------------------------------------------------
-# Main entry point (#2 - bind to 127.0.0.1, #20 - configurable port)
+# Main entry point (Fix #7: configurable host, Fix #18: reload support)
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=SERVER_PORT)
+    # Pass app instance directly; import string only works when run as module
+    uvicorn.run(app, host=SERVER_HOST, port=SERVER_PORT)

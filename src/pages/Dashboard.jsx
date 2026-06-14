@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Activity, CheckCircle, AlertTriangle, XCircle, RefreshCw,
@@ -10,7 +10,7 @@ import EmptyState from '../components/EmptyState'
 
 export default function Dashboard() {
   const navigate = useNavigate()
-  const { status, doctorResult, loading, fetchStatus, fetchDoctor } = useStore()
+  const { status, doctorResult, loading, error, fetchStatus, fetchDoctor } = useStore()
   const [channels, setChannels] = useState([])
   const [channelsLoading, setChannelsLoading] = useState(false)
 
@@ -48,6 +48,21 @@ export default function Dashboard() {
     { label: '需要关注', value: warnChannels, icon: AlertTriangle, color: 'text-amber-400', bg: 'bg-amber-500/10' },
     { label: '不可用', value: errChannels, icon: XCircle, color: 'text-red-400', bg: 'bg-red-500/10' },
   ]
+
+  // Error state when status API fails
+  if (status === null && error) {
+    return (
+      <div className="space-y-6 animate-slide-in">
+        <div className="card border-red-600/20">
+          <div className="card-body text-center">
+            <XCircle size={32} className="text-red-400 mx-auto mb-3" />
+            <p className="text-red-400 text-sm mb-3">加载状态失败: {error}</p>
+            <button onClick={fetchStatus} className="btn-secondary text-sm">重试</button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   // Loading skeleton while status is null
   if (status === null) {

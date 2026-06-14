@@ -55,7 +55,7 @@ export default function Install() {
   const [installResult, setInstallResult] = useState(null)
   const [proxyError, setProxyError] = useState('')
 
-  const { output, connected, running, send, clear } = useWebSocket()
+  const { output, setOutput, connected, running, send, clear } = useWebSocket()
   const terminalRef = useRef(null)
 
   useEffect(() => {
@@ -63,6 +63,17 @@ export default function Install() {
       terminalRef.current.scrollTop = terminalRef.current.scrollHeight
     }
   }, [output])
+
+  // Warn before closing/leaving during active install
+  useEffect(() => {
+    if (!installing && !running) return
+    function handleBeforeUnload(e) {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [installing, running])
 
   // Track install completion via WebSocket done/error messages
   useEffect(() => {
@@ -113,30 +124,34 @@ export default function Install() {
     setInstallResult(null)
     clear()
 
-    // Send command via WebSocket terminal
-    let cmd = `agent-reach install --env=${env}`
-    if (safe) cmd += ' --safe'
-    if (dryRun) cmd += ' --dry-run'
-    if (proxy) cmd += ` --proxy=${proxy}`
-    if (selectedChannels.length > 0) cmd += ` --channels=${selectedChannels.join(',')}`
-
-    if (connected) {
-      // Don't setInstalling(false) immediately - tracked via WebSocket done/error
-      send(cmd)
-    } else {
-      // Fallback to REST API
-      try {
-        const result = await api.install({
-          env,
-          channels: selectedChannels,
-          safe,
-          dry_run: dryRun,
-          proxy,
-        })
-        setInstallResult(result)
-      } catch (e) {
-        setInstallResult({ success: false, error: e.message })
+    // Always use REST API for install (has proper validation)
+    try {
+      const result = await api.install({
+        env,
+        channels: selectedChannels,
+        safe,
+        dry_run: dryRun,
+        proxy,
+      })
+      setInstallResult(result)
+      // Display formatted result in terminal output area
+      const lines = []
+      lines.push({ text: '$ agent-reach install', type: 'command' })
+      if (result.output) {
+        result.output.split('\n').forEach(l => lines.push({ text: l, type: 'output' }))
       }
+      lines.push({
+        text: result.success ? '安装成功!' : `安装失败: ${result.error || '未知错误'}`,
+        type: result.success ? 'success' : 'error'
+      })
+      setOutput(lines)
+    } catch (e) {
+      setInstallResult({ success: false, error: e.message })
+      setOutput([
+        { text: '$ agent-reach install', type: 'command' },
+        { text: `安装失败: ${e.message}`, type: 'error' }
+      ])
+    } finally {
       setInstalling(false)
     }
   }
@@ -414,7 +429,17 @@ export default function Install() {
           </button>
         ) : (
           <button
-            onClick={() => { setStep(0); setInstallResult(null); clear() }}
+            onClick={() => {
+              setStep(0)
+              setInstallResult(null)
+              clear()
+              setEnv('auto')
+              setSelectedChannels([])
+              setSafe(false)
+              setDryRun(false)
+              setProxy('')
+              setProxyError('')
+            }}
             disabled={isNavigationDisabled}
             className="btn-secondary flex items-center gap-2"
           >

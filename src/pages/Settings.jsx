@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import {
   Settings, Save, Loader2, AlertTriangle, Trash2, RefreshCw,
   CheckCircle, XCircle, Shield, Download, FileText, Wrench, Eye, EyeOff
@@ -217,6 +217,8 @@ export default function SettingsPage() {
                 onChange={e => setConfigKey(e.target.value)}
                 placeholder="配置键"
                 className="input flex-1"
+                autoComplete="off"
+                spellCheck={false}
               />
               <input
                 type="text"
@@ -224,6 +226,8 @@ export default function SettingsPage() {
                 onChange={e => setConfigValue(e.target.value)}
                 placeholder="配置值"
                 className="input flex-1"
+                autoComplete="off"
+                spellCheck={false}
               />
               <button
                 onClick={handleSaveConfig}
@@ -346,7 +350,11 @@ export default function SettingsPage() {
               </label>
               <div className="flex gap-2">
                 <button
-                  onClick={handleUninstall}
+                  onClick={() => {
+                    if (window.confirm('确认要卸载 Agent Reach 吗？此操作不可撤销。')) {
+                      handleUninstall()
+                    }
+                  }}
                   disabled={uninstalling}
                   className="btn-danger flex items-center gap-2"
                 >

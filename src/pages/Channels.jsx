@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useMemo, useDeferredValue } from 'react'
+import { useState, useRef, useEffect, useMemo, useDeferredValue } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import {
   Search, Filter, ChevronDown, ChevronUp,
@@ -75,6 +75,13 @@ export default function Channels() {
     document.addEventListener('keydown', handleKeyDown)
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [expanded, selectedName, navigate])
+
+  // Auto-dismiss config messages after 3 seconds
+  useEffect(() => {
+    if (!configMsg) return
+    const timer = setTimeout(() => setConfigMsg(null), 3000)
+    return () => clearTimeout(timer)
+  }, [configMsg])
 
   async function loadChannels() {
     setLoading(true)
